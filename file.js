@@ -27,6 +27,8 @@ const upload = multer({
     if (isValidType) {
       return cb(null, true);
     } else {
+      console.log("test");
+      
       return cb(new Error('Invalid file type. Only JPEG, PNG, or WebP allowed.'));
     }
   }
