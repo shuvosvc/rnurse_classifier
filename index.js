@@ -1,0 +1,171 @@
+const express = require('express');
+const multer = require('multer');
+const sharp = require('sharp');
+const path = require('path');
+const fs = require('fs/promises');
+const Tesseract = require('tesseract.js');
+const database = require('./utils/connection');
+const { port, BASE_URL } = require('./config/ApplicationSettings');
+const medicalKeywords  = require('./heuristic_data');
+
+const app = express();
+
+
+
+
+// Multer setup
+const storage = multer.memoryStorage();
+const upload = multer({
+  storage: storage,
+  limits: {
+    files: 10, // Maximum number of files the user can upload (e.g., 5 files)
+    fileSize:  1024 * 1024, // Maximum file size (e.g., 10 MB per file)
+  },
+  fileFilter: (req, file, cb) => {
+    const allowedTypes = /png/; // Allow only .jpg files
+    const fileExt = file.originalname.split('.').pop().toLowerCase();
+    const isValidType = allowedTypes.test(fileExt);
+    if (isValidType) {
+      cb(null, true);
+    } else {
+      cb(new Error('Invalid file type. Only png files are allowed.'));
+    }
+  },
+});
+
+
+const processImages = async (files) => {
+  const processedImages = [];
+  for (const file of files) {
+    const imageBuffer = file.buffer; // Extract the buffer from the uploaded file
+
+    const currentDate = new Date().toISOString().replace(/[-:]/g, '');
+    const original = sharp(imageBuffer);
+
+    // Create grayscale for classification
+    const grayscaleBuffer = await original
+      .grayscale()
+      .toFormat('png')
+      .toBuffer();
+
+    // Create color image for storage
+    const colorBuffer = await original
+      .toFormat('png')
+      .toBuffer();
+
+    // Create thumbnail
+    const thumbnailBuffer = await original
+      .resize(200, 200, { fit: 'inside' }) // Adjust thumbnail size as needed
+      .toFormat('png')
+      .toBuffer();
+
+    const grayscaleFilename = `${file.originalname}-gray-${currentDate}.png`;
+    const colorFilename = `${file.originalname}-color-${currentDate}.png`;
+    const thumbnailFilename = `${file.originalname}-thumbnail-${currentDate}.png`;
+
+    processedImages.push({
+      grayscale: { buffer: grayscaleBuffer, filename: grayscaleFilename },
+      color: { buffer: colorBuffer, filename: colorFilename },
+      thumbnail: { buffer: thumbnailBuffer, filename: thumbnailFilename }, // Assign the thumbnail buffer
+    });
+  }
+  return processedImages;
+};
+
+
+
+// Classification logic
+const classifyImage = async (grayscaleImage) => {
+  try {
+    const { data: { text } } = await Tesseract.recognize(grayscaleImage, 'eng');
+    const cleanedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+    // const medicalKeywords = [ /* Your medical keywords */ ];
+
+    const isMedicalDocument = medicalKeywords.some((keyword) =>
+      cleanedText.includes(keyword)
+    );
+    return { isMedicalDocument, extractedText: text };
+  } catch (error) {
+    console.error('Error during classification:', error);
+    return { isMedicalDocument: false, extractedText: '' };
+  }
+};
+
+
+
+// Handle uploads
+app.post('/api/upload', upload.array('image'), async (req, res) => {
+    const connection = await database.getConnection(); // Get DB connection
+    try {
+      if (!req.files || req.files.length === 0) {
+        return res.status(400).json({ error: 'No files uploaded.' });
+      }
+  
+      await connection.beginTransaction(); // Start a transaction
+      const processedImages = await processImages(req.files);
+      const invalidImages = [];
+      const uploadFolder = path.join(__dirname, 'uploads');
+  
+      await fs.mkdir(uploadFolder, { recursive: true });
+  
+      for (let i = 0; i < processedImages.length; i++) {
+        const { grayscale, color ,thumbnail} = processedImages[i];
+        const classificationResult = await classifyImage(grayscale.buffer);
+  
+        if (!classificationResult.isMedicalDocument) {
+          invalidImages.push({ index: i, filename: grayscale.filename });
+          continue;
+        }
+  
+        // Save color image for frontend
+        const colorPath = path.join(uploadFolder, color.filename);
+        await fs.writeFile(colorPath, color.buffer);
+  
+     // Save thumbnail image
+     const thumbnailPath = path.join(uploadFolder, thumbnail.filename);
+     await fs.writeFile(thumbnailPath, thumbnail.buffer);
+
+
+        // Store image path in the database
+        const query = 'INSERT INTO prescription (user_id,resized,thumbnail) VALUES ($1,$2,$3)';
+        await connection.queryOne(query, [1,`/uploads/${color.filename}`,`/uploads/${thumbnail.filename}`]);
+      }
+  
+      if (invalidImages.length > 0) {
+        await connection.rollback(); // Rollback if invalid images are found
+        return res.status(400).json({
+          error: 'Some files are not medical documents.',
+          invalidImages,
+        });
+      }
+  
+      await connection.commit(); // Commit transaction
+      res.status(200).json({ message: 'All files processed successfully.' });
+    } catch (error) {
+
+      await connection.rollback();
+
+      if (error instanceof multer.MulterError) {
+        if (error.code === 'LIMIT_FILE_COUNT') {
+          return res.status(400).json({ error: 'You can only upload a maximum of 10 files.' });
+        } else if (error.code === 'LIMIT_FILE_SIZE') {
+          return res.status(400).json({ error: 'File size exceeds the limit .' });
+        }
+      } else {
+        return res.status(500).json({ error: 'An unknown error occurred.' });
+      }
+
+      console.error('Error processing images:', error);
+    
+    } finally {
+      await connection.release(); // Release DB connection
+    }
+  });
+  
+  
+
+ 
+
+  app.listen(port, () => {
+    console.log(`🚀 Server is up and running on http://localhost:${port}`);
+  });
