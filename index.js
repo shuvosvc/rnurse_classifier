@@ -16,6 +16,7 @@ app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads'))
 
 // Multer setup
 const storage = multer.memoryStorage();
+
 const upload = multer({
   storage: storage,
   limits: {
@@ -34,28 +35,27 @@ const upload = multer({
   },
 });
 
-
-const processImages = async (files,userId) => {
+const processImages = async (files, userId) => {
   const processedImages = [];
   for (const file of files) {
     const imageBuffer = file.buffer; // Extract the buffer from the uploaded file
 
     const currentDate = new Date().toISOString().replace(/[-:]/g, '');
-    const original = sharp(imageBuffer);
+    const original = sharp(imageBuffer); // Keep the original image for color and thumbnail
 
-    // Create grayscale for classification
+    // Create grayscale image for classification
     const grayscaleBuffer = await original
-      .grayscale()
+      .grayscale() // Apply grayscale to the original image buffer
       .toFormat('png')
       .toBuffer();
 
-    // Create color image for storage
-    const colorBuffer = await original
+    // Create color image (no grayscale applied)
+    const colorBuffer = await sharp(imageBuffer)  // Ensure color image is from the original, unmodified buffer
       .toFormat('png')
       .toBuffer();
 
-    // Create thumbnail
-    const thumbnailBuffer = await original
+    // Create thumbnail image from original color image buffer
+    const thumbnailBuffer = await sharp(imageBuffer)
       .resize(200, 200, { fit: 'inside' }) // Adjust thumbnail size as needed
       .toFormat('png')
       .toBuffer();
@@ -74,7 +74,6 @@ const processImages = async (files,userId) => {
 };
 
 
-
 // Classification logic
 const classifyImage = async (grayscaleImage) => {
   try {
@@ -91,8 +90,6 @@ const classifyImage = async (grayscaleImage) => {
     return { isMedicalDocument: false, extractedText: '' };
   }
 };
-
-
 
 // Handle uploads
 app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
