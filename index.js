@@ -82,6 +82,9 @@ const classifyImage = async (grayscaleImage) => {
   try {
     const { data: { text } } = await Tesseract.recognize(grayscaleImage, 'eng');
     const cleanedText = text.toLowerCase().replace(/\s+/g, ' ').trim();
+
+    console.log("Extracted Text:", cleanedText);
+    
     // const medicalKeywords = [ /* Your medical keywords */ ];
 
     const isMedicalDocument = medicalKeywords.some((keyword) =>
@@ -176,6 +179,8 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
     await connection.release(); // Release DB connection
   }
 });
+
+
 app.post('/uploadReport', upload.array('image'), async (req, res) => {
 
   const connection = await database.getConnection(); // Get DB connection
@@ -257,6 +262,159 @@ app.post('/uploadReport', upload.array('image'), async (req, res) => {
     await connection.release(); // Release DB connection
   }
 });
+
+
+
+app.post('/uploadReport', upload.array('image'), async (req, res) => {
+  const connection = await database.getConnection();
+  try {
+    const {
+      accessToken,
+      member_id,
+      prescription_id,
+      shared,
+      test_name,
+      deliveryDate
+    } = req.body;
+
+    if (!member_id || !Number.isInteger(+member_id) || +member_id <= 0) {
+      return res.status(400).json({ error: 'Invalid or missing member_id' });
+    }
+
+
+// Validate required field
+if (!member_id || !Number.isInteger(+member_id) || +member_id <= 0) {
+  return res.status(400).json({ error: 'Invalid or missing member_id' });
+}
+
+// Optional: validate prescription_id
+if (prescription_id !== undefined && (!Number.isInteger(+prescription_id) || +prescription_id <= 0)) {
+  return res.status(400).json({ error: 'Invalid prescription_id' });
+}
+
+// Optional: validate shared
+if (shared !== undefined && shared !== 'true' && shared !== 'false' && shared !== true && shared !== false) {
+  return res.status(400).json({ error: 'Invalid shared value. Must be true or false' });
+}
+
+// Optional: validate test_name
+if (test_name !== undefined && typeof test_name !== 'string') {
+  return res.status(400).json({ error: 'test_name must be a string' });
+}
+
+// Optional: validate deliveryDate
+if (deliveryDate !== undefined) {
+  const date = new Date(deliveryDate);
+  if (isNaN(date.getTime())) {
+    return res.status(400).json({ error: 'Invalid deliveryDate format. Use YYYY-MM-DD' });
+  }
+}
+
+
+    const { decodedToken } = await authintication(accessToken, member_id, connection);
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No files uploaded.' });
+    }
+
+    await connection.beginTransaction();
+
+    // Dynamically build insert for optional fields
+    const fields = ['user_id'];
+    const values = [member_id];
+    const placeholders = ['$1'];
+    let idx = 2;
+
+    if (prescription_id) {
+      fields.push('prescription_id');
+      values.push(prescription_id);
+      placeholders.push(`$${idx++}`);
+    }
+
+    if (shared !== undefined) {
+      fields.push('shared');
+      values.push(shared === 'true' || shared === true); // string to bool
+      placeholders.push(`$${idx++}`);
+    }
+
+    if (test_name) {
+      fields.push('test_name');
+      values.push(test_name);
+      placeholders.push(`$${idx++}`);
+    }
+
+    if (deliveryDate) {
+      fields.push('delivery_date');
+      values.push(deliveryDate); // Expecting 'YYYY-MM-DD'
+      placeholders.push(`$${idx++}`);
+    }
+
+    fields.push('created_at');
+    values.push('CURRENT_DATE');
+    placeholders.push('CURRENT_DATE');
+
+    const insertQuery = `INSERT INTO reports (${fields.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING id`;
+    const { id: reportId } = await connection.queryOne(insertQuery, values);
+
+    const uploadFolder = path.join(__dirname, 'uploads');
+    await fs.mkdir(uploadFolder, { recursive: true });
+
+    const processedImages = await processImages(req.files, decodedToken.userId);
+    const invalidImages = [];
+
+    for (let i = 0; i < processedImages.length; i++) {
+      const { grayscale, color, thumbnail } = processedImages[i];
+      const classificationResult = await classifyImage(grayscale.buffer);
+
+      if (!classificationResult.isMedicalDocument) {
+        invalidImages.push({ index: i, filename: grayscale.filename });
+        continue;
+      }
+
+      const colorPath = path.join(uploadFolder, color.filename);
+      const thumbPath = path.join(uploadFolder, thumbnail.filename);
+      await fs.writeFile(colorPath, color.buffer);
+      await fs.writeFile(thumbPath, thumbnail.buffer);
+
+      await connection.query(
+        `INSERT INTO report_images (report_id, resiged, thumb, created_at)
+         VALUES ($1, $2, $3, CURRENT_DATE)`,
+        [reportId, `/uploads/${color.filename}`, `/uploads/${thumbnail.filename}`]
+      );
+    }
+
+    if (invalidImages.length > 0) {
+      await connection.rollback();
+      return res.status(400).json({
+        error: 'Some files are not medical documents.',
+        invalidImages
+      });
+    }
+
+    await connection.commit();
+    res.status(200).json({ message: 'Report uploaded successfully.', reportId });
+  } catch (error) {
+    await connection.rollback();
+
+    if (error instanceof multer.MulterError) {
+      if (error.code === 'LIMIT_FILE_COUNT') {
+        return res.status(400).json({ error: 'You can only upload a maximum of 10 files.' });
+      } else if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File size exceeds the limit.' });
+      }
+    }
+
+    if (['Access token is required.', 'Invalid or expired access token.', 'Invalid user.'].includes(error.message)) {
+      return res.status(403).json({ error: error.message });
+    }
+
+    console.error("Error processing report upload:", error);
+    return res.status(500).json({ error: 'An unknown error occurred.' });
+  } finally {
+    await connection.release();
+  }
+});
+
 
 
 app.post('/uploadProfile', upload.single('image'), async (req, res) => {
