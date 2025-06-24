@@ -13,7 +13,7 @@ const { log } = require('console');
 const app = express();
 
 app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads')));
-// app.use('/profiles', authfilereq, express.static(path.join(__dirname, 'profiles')));
+app.use('/profiles', authfilereq, express.static(path.join(__dirname, 'profiles')));
 
 
 // Multer setup
@@ -497,6 +497,79 @@ app.post('/uploadReports', upload.array('image'), async (req, res) => {
 });
 
 
+app.post('/appendReportImages', upload.array('image'), async (req, res) => {
+  const connection = await database.getConnection();
+  try {
+    const { accessToken, member_id, report_id } = req.body;
+
+    if (!member_id || !Number.isInteger(+member_id) || +member_id <= 0) {
+      return res.status(400).json({ error: 'Invalid member_id' });
+    }
+
+    if (!report_id || !Number.isInteger(+report_id) || +report_id <= 0) {
+      return res.status(400).json({ error: 'Invalid report_id' });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded.' });
+    }
+
+    const { decodedToken } = await authintication(accessToken, member_id, connection);
+
+
+
+    const report = await connection.queryOne(
+      'SELECT user_id FROM reports WHERE id = $1 AND deleted = false',
+      [report_id]
+    );
+    if (!report || report.user_id !== +member_id) {
+      return res.status(403).json({ error: 'Report not found or does not belong to this member.' });
+    }
+
+    await connection.beginTransaction();
+
+    const uploadFolder = path.join(__dirname, 'uploads');
+    await fs.mkdir(uploadFolder, { recursive: true });
+
+    const processedImages = await processImages(req.files, decodedToken.userId);
+    const invalidImages = [];
+
+    for (let i = 0; i < processedImages.length; i++) {
+      const { grayscale, color, thumbnail } = processedImages[i];
+      const classificationResult = await classifyImage(grayscale.buffer);
+
+      if (!classificationResult.isMedicalDocument) {
+        invalidImages.push({ index: i, filename: grayscale.filename });
+        continue;
+      }
+
+      const colorPath = path.join(uploadFolder, color.filename);
+      const thumbPath = path.join(uploadFolder, thumbnail.filename);
+      await fs.writeFile(colorPath, color.buffer);
+      await fs.writeFile(thumbPath, thumbnail.buffer);
+
+      await connection.query(
+        `INSERT INTO report_images (report_id, resiged, thumb, created_at)
+         VALUES ($1, $2, $3, CURRENT_DATE)`,
+        [report_id, `/uploads/${color.filename}`, `/uploads/${thumbnail.filename}`]
+      );
+    }
+
+    if (invalidImages.length > 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Some images are invalid.', invalidImages });
+    }
+
+    await connection.commit();
+    res.status(200).json({ message: 'Images appended successfully to report.' });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error appending report images:", error);
+    res.status(500).json({ error: 'An unknown error occurred.' });
+  } finally {
+    await connection.release();
+  }
+});
 
 
 
