@@ -8,10 +8,12 @@ const database = require('./utils/connection');
 const { port, jwtSecret } = require('./config/ApplicationSettings');
 const medicalKeywords = require('./heuristic_data');
 const { authintication,authfilereq} = require('./utils/common'); // Import the utility function
+const { log } = require('console');
 
 const app = express();
 
 app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads')));
+// app.use('/profiles', authfilereq, express.static(path.join(__dirname, 'profiles')));
 
 
 // Multer setup
@@ -24,13 +26,14 @@ const upload = multer({
     fileSize: 1024 * 1024, // Maximum file size (e.g., 10 MB per file)
   },
   fileFilter: (req, file, cb) => {
-    const allowedTypes = /png/; // Allow only .jpg files
+    // const allowedTypes = /png/; // Allow only .jpg files
+    const allowedTypes = /jpeg|jpg|png|webp/; // Allow only .jpg files
     const fileExt = file.originalname.split('.').pop().toLowerCase();
     const isValidType = allowedTypes.test(fileExt);
     if (isValidType) {
       cb(null, true);
     } else {
-      cb(new Error('Invalid file type. Only png files are allowed.'));
+      cb(new Error('Invalid file type. Only jpeg,jpg,png,webp files are allowed.'));
     }
   },
 });
@@ -106,7 +109,7 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
 
     }
     // Decode token and verify user existence
-   const decoded= await authintication(accessToken, member_id, connection);
+   const {decodedToken}= await authintication(accessToken, member_id, connection);
 
    
     // Check if files are uploaded
@@ -115,7 +118,7 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
     }
 
     await connection.beginTransaction(); // Start a transaction
-    const processedImages = await processImages(req.files,decoded.userId);
+    const processedImages = await processImages(req.files,decodedToken.userId);
     const invalidImages = [];
     const uploadFolder = path.join(__dirname, 'uploads');
 
@@ -187,7 +190,7 @@ app.post('/uploadReport', upload.array('image'), async (req, res) => {
 
     }
     // Decode token and verify user existence
-   const decoded= await authintication(accessToken, member_id, connection);
+   const {decodedToken}= await authintication(accessToken, member_id, connection);
 
    
     // Check if files are uploaded
@@ -196,7 +199,7 @@ app.post('/uploadReport', upload.array('image'), async (req, res) => {
     }
 
     await connection.beginTransaction(); // Start a transaction
-    const processedImages = await processImages(req.files,decoded.userId);
+    const processedImages = await processImages(req.files,decodedToken.userId);
     const invalidImages = [];
     const uploadFolder = path.join(__dirname, 'uploads');
 
@@ -256,6 +259,93 @@ app.post('/uploadReport', upload.array('image'), async (req, res) => {
 });
 
 
+app.post('/uploadProfile', upload.single('image'), async (req, res) => {
+
+  const connection = await database.getConnection(); // Get DB connection
+  try {
+    const { accessToken, member_id } = req.body;
+ // Check if files are uploaded
+    if (!member_id) {
+      return res.status(400).json({ error: 'Missing field!' });
+    }
+    if (!(Number.isInteger(+member_id) && +member_id > 0)) {
+      return res.status(400).json({ error: 'invalid type!' });
+
+    }
+    // Decode token and verify user existence
+   const {decodedToken,isExist}= await authintication(accessToken, member_id, connection);
+
+   
+    // Check if files are uploaded
+    if (!req.file) {
+      return res.status(400).json({ error: 'No files uploaded.' });
+    }
+
+    await connection.beginTransaction(); // Start a transaction
+    const processedImages = await processImages([req.file],decodedToken.userId);
+    // const invalidImages = [];
+    const uploadFolder = path.join(__dirname, 'profiles');
+
+    await fs.mkdir(uploadFolder, { recursive: true });
+
+
+
+      const {  color } = processedImages[0];
+
+  
+      // Save color image for frontend
+      const colorPath = path.join(uploadFolder, color.filename);
+      await fs.writeFile(colorPath, color.buffer);
+
+   await connection.queryOne(
+      `UPDATE users SET profile_image_url = $1 WHERE user_id = $2`,
+      [`/profiles/${color.filename}`, member_id]
+    );
+
+
+    // Delete previous profile image if exists
+if (isExist.profile_image_url) {
+  const previousPath = path.join(__dirname, isExist.profile_image_url);
+  try {
+    await fs.unlink(previousPath);
+  } catch (err) {
+    if (err.code !== 'ENOENT') {
+      console.error('Failed to delete previous image:', err);
+      throw new Error('Error deleting old profile image.');
+    }
+    // ENOENT means file doesn't exist, which is fine
+  }
+}
+
+
+    await connection.commit(); // Commit transaction
+    res.status(200).json({ message: 'Profile pic uploaded successfully.' });
+  } catch (error) {
+
+    await connection.rollback();
+
+    if (error instanceof multer.MulterError) {
+
+    
+      if (error.code === 'LIMIT_FILE_COUNT') {
+        return res.status(400).json({ error: 'You can only upload a maximum of 10 files.' });
+      } else if (error.code === 'LIMIT_FILE_SIZE') {
+        return res.status(400).json({ error: 'File size exceeds the limit.' });
+      }
+    } else if (error.message === 'Access token is required.' || error.message === 'Invalid or expired access token.' || error.message === 'Invalid user.') {
+      return res.status(403).json({ error: error.message });
+    } else {
+      return res.status(500).json({ error: 'An unknown error occurred.' });
+    }
+
+    console.error('Error processing images:', error);
+  } finally {
+    await connection.release(); // Release DB connection
+  }
+});
+
+
+console.log("hi");
 
 app.listen(port, () => {
   console.log(`🚀 Server is up and running on http://localhost:${port}`);

@@ -18,7 +18,7 @@ async function authintication(token,member_id, connection) {
   // Check if user exists in the database
 
   const isExist = await connection.queryOne(
-    'SELECT user_id FROM users WHERE  user_id = $1 and mc_id = $2 and deleted=false',
+    'SELECT user_id,profile_image_url FROM users WHERE  user_id = $1 and mc_id = $2 and deleted=false',
     [member_id, decodedToken.userId]
   );
 
@@ -26,7 +26,7 @@ async function authintication(token,member_id, connection) {
     throw new Error('Invalid user.');
   }
 
-  return decodedToken;
+  return {decodedToken, isExist  };
 }
 
 
