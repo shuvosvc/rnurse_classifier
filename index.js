@@ -240,6 +240,79 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
 });
 
 
+app.post('/appendPrescriptionImages', upload.array('image'), async (req, res) => {
+  const connection = await database.getConnection();
+  try {
+    const { accessToken, member_id, prescription_id } = req.body;
+
+    if (!member_id || !Number.isInteger(+member_id) || +member_id <= 0) {
+      return res.status(400).json({ error: 'Invalid member_id' });
+    }
+
+    if (!prescription_id || !Number.isInteger(+prescription_id) || +prescription_id <= 0) {
+      return res.status(400).json({ error: 'Invalid prescription_id' });
+    }
+
+    if (!req.files || req.files.length === 0) {
+      return res.status(400).json({ error: 'No images uploaded.' });
+    }
+
+    const { decodedToken } = await authintication(accessToken, member_id, connection);
+
+ 
+
+    const prescription = await connection.queryOne(
+      'SELECT user_id FROM prescriptions WHERE id = $1 AND deleted = false',
+      [prescription_id]
+    );
+    if (!prescription || prescription.user_id !== +member_id) {
+      return res.status(403).json({ error: 'Prescription not found or does not belong to this member.' });
+    }
+
+    await connection.beginTransaction();
+
+    const uploadFolder = path.join(__dirname, 'uploads');
+    await fs.mkdir(uploadFolder, { recursive: true });
+
+    const processedImages = await processImages(req.files, decodedToken.userId);
+    const invalidImages = [];
+
+    for (let i = 0; i < processedImages.length; i++) {
+      const { grayscale, color, thumbnail } = processedImages[i];
+      const classificationResult = await classifyImage(grayscale.buffer);
+
+      if (!classificationResult.isMedicalDocument) {
+        invalidImages.push({ index: i, filename: grayscale.filename });
+        continue;
+      }
+
+      const colorPath = path.join(uploadFolder, color.filename);
+      const thumbPath = path.join(uploadFolder, thumbnail.filename);
+      await fs.writeFile(colorPath, color.buffer);
+      await fs.writeFile(thumbPath, thumbnail.buffer);
+
+      await connection.query(
+        `INSERT INTO prescription_images (prescription_id, resiged, thumb, created_at)
+         VALUES ($1, $2, $3, CURRENT_DATE)`,
+        [prescription_id, `/uploads/${color.filename}`, `/uploads/${thumbnail.filename}`]
+      );
+    }
+
+    if (invalidImages.length > 0) {
+      await connection.rollback();
+      return res.status(400).json({ error: 'Some images are invalid.', invalidImages });
+    }
+
+    await connection.commit();
+    res.status(200).json({ message: 'Images appended successfully to prescription.' });
+  } catch (error) {
+    await connection.rollback();
+    console.error("Error appending prescription images:", error);
+    res.status(500).json({ error: 'An unknown error occurred.' });
+  } finally {
+    await connection.release();
+  }
+});
 
 
 
