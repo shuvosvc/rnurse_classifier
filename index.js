@@ -107,7 +107,8 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
       member_id,
       department,
       doctor_name,
-      visited_date
+      visited_date,
+      title,shared
     } = req.body;
 
     // Validate required member_id
@@ -115,9 +116,19 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
       return res.status(400).json({ error: 'Invalid or missing member_id' });
     }
 
+    // Validate required title
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      return res.status(400).json({ error: 'Missing or invalid prescription title' });
+    }
+
     // Optional validations
     if (department !== undefined && typeof department !== 'string') {
       return res.status(400).json({ error: 'department must be a string' });
+    }
+
+
+    if (shared !== undefined && shared !== 'true' && shared !== 'false' && shared !== true && shared !== false) {
+      return res.status(400).json({ error: 'Invalid shared value. Must be true or false' });
     }
 
     if (doctor_name !== undefined && typeof doctor_name !== 'string') {
@@ -142,14 +153,20 @@ app.post('/uploadPrescription', upload.array('image'), async (req, res) => {
     await connection.beginTransaction();
 
     // Build dynamic INSERT for prescriptions
-    const fields = ['user_id'];
-    const values = [member_id];
-    const placeholders = ['$1'];
-    let idx = 2;
+    const fields = ['user_id', 'title'];
+    const values = [member_id, title];
+    const placeholders = ['$1', '$2'];
+    let idx = 3;
 
     if (department) {
       fields.push('department');
       values.push(department);
+      placeholders.push(`$${idx++}`);
+    }
+
+if (shared !== undefined) {
+      fields.push('shared');
+      values.push(shared === 'true' || shared === true); // Convert to boolean
       placeholders.push(`$${idx++}`);
     }
 
@@ -338,7 +355,6 @@ app.post('/appendPrescriptionImages', upload.array('image'), async (req, res) =>
 
 
 
-
 app.post('/uploadReports', upload.array('image'), async (req, res) => {
   const connection = await database.getConnection();
   try {
@@ -348,12 +364,18 @@ app.post('/uploadReports', upload.array('image'), async (req, res) => {
       prescription_id,
       shared,
       test_name,
-      deliveryDate
+      deliveryDate,
+      title
     } = req.body;
 
     // Validate required member_id
     if (!member_id || !Number.isInteger(+member_id) || +member_id <= 0) {
       return res.status(400).json({ error: 'Invalid or missing member_id' });
+    }
+
+    // Validate required title
+    if (!title || typeof title !== 'string' || title.trim().length === 0) {
+      return res.status(400).json({ error: 'Missing or invalid report title' });
     }
 
     // Optional validations
@@ -375,8 +397,6 @@ app.post('/uploadReports', upload.array('image'), async (req, res) => {
         return res.status(403).json({ error: 'Unauthorized. Prescription does not belong to this member.' });
       }
     }
-
-    
 
     if (shared !== undefined && shared !== 'true' && shared !== 'false' && shared !== true && shared !== false) {
       return res.status(400).json({ error: 'Invalid shared value. Must be true or false' });
@@ -401,10 +421,10 @@ app.post('/uploadReports', upload.array('image'), async (req, res) => {
 
     await connection.beginTransaction();
 
-    const fields = ['user_id'];
-    const values = [member_id];
-    const placeholders = ['$1'];
-    let idx = 2;
+    const fields = ['user_id', 'title'];
+    const values = [member_id, title];
+    const placeholders = ['$1', '$2'];
+    let idx = 3;
 
     if (prescription_id !== undefined) {
       fields.push('prescription_id');
