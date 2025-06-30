@@ -2,6 +2,7 @@ const express = require('express');
 const multer = require('multer');
 const sharp = require('sharp');
 const path = require('path');
+const jwt = require('jsonwebtoken');
 const fs = require('fs/promises');
 const Tesseract = require('tesseract.js');
 const database = require('./utils/connection');
@@ -11,6 +12,18 @@ const { authintication,authfilereq} = require('./utils/common'); // Import the u
 const { log } = require('console');
 
 const app = express();
+
+
+const cors = require('cors');
+
+
+
+app.use(cors({
+  origin: '*',  // Allow all origins (development only!)
+  credentials: false
+}));
+
+
 
 app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads')));
 app.use('/profiles', authfilereq, express.static(path.join(__dirname, 'profiles')));
@@ -338,23 +351,6 @@ app.post('/appendPrescriptionImages', upload.array('image'), async (req, res) =>
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 app.post('/uploadReports', upload.array('image'), async (req, res) => {
   const connection = await database.getConnection();
   try {
@@ -595,8 +591,155 @@ app.post('/appendReportImages', upload.array('image'), async (req, res) => {
 
 
 
+app.get('/getSharedDocs', async (req, res) => {
+  const { token } = req.query;
 
+  if (!token || typeof token !== 'string') {
+    return res.status(400).json({ error: 'Token is required' });
+  }
 
+  const connection = await database.getConnection();
+  try {
+    // Step 1: Validate token
+    const tokenInfo = await connection.queryOne(
+      `SELECT user_id, expires_at FROM token WHERE token = $1`,
+      [token]
+    );
+
+    if (!tokenInfo) {
+      return res.status(403).json({ error: 'Invalid token' });
+    }
+
+    const { user_id, expires_at } = tokenInfo;
+    const now = new Date();
+    const expiry = new Date(expires_at);
+
+    if (expiry < now) {
+      return res.status(403).json({ error: 'Token has expired' });
+    }
+
+    const expiresInSeconds = Math.floor((expiry.getTime() - now.getTime()) / 1000);
+    if (expiresInSeconds <= 0) {
+      return res.status(403).json({ error: 'Token has expired' });
+    }
+
+    // Step 2: Generate JWT for file access
+    const fileAccessToken = jwt.sign({ userId: user_id }, jwtSecret, {
+      expiresIn: expiresInSeconds
+    });
+
+    // Step 3: Fetch shared prescriptions
+    const prescriptions = await connection.query(
+      `SELECT id, title, department, doctor_name, visited_date, created_at
+       FROM prescriptions
+       WHERE user_id = $1 AND shared = true AND deleted = false
+       ORDER BY created_at DESC`,
+      [user_id]
+    );
+
+    const prescriptionIds = prescriptions.map(p => p.id);
+
+    // Step 4: Fetch prescription images
+    const prescriptionImages = await connection.query(
+      `SELECT prescription_id, id as prescription_img_id, resiged, thumb
+       FROM prescription_images
+       WHERE prescription_id = ANY($1::int[]) AND deleted = false
+       ORDER BY created_at ASC`,
+      [prescriptionIds]
+    );
+
+    const prescriptionImageMap = {};
+    for (const img of prescriptionImages) {
+      if (!prescriptionImageMap[img.prescription_id]) prescriptionImageMap[img.prescription_id] = [];
+      prescriptionImageMap[img.prescription_id].push(img);
+    }
+
+    // Step 5: Fetch shared reports (with prescription)
+    const reports = await connection.query(
+      `SELECT id, title, test_name, delivery_date, prescription_id, created_at
+       FROM reports
+       WHERE prescription_id = ANY($1::int[]) AND user_id = $2 AND shared = true AND deleted = false
+       ORDER BY created_at DESC`,
+      [prescriptionIds, user_id]
+    );
+
+    const reportIds = reports.map(r => r.id);
+
+    const reportImages = await connection.query(
+      `SELECT report_id, id as report_img_id, resiged, thumb
+       FROM report_images
+       WHERE report_id = ANY($1::int[]) AND deleted = false
+       ORDER BY created_at ASC`,
+      [reportIds]
+    );
+
+    const reportImageMap = {};
+    for (const img of reportImages) {
+      if (!reportImageMap[img.report_id]) reportImageMap[img.report_id] = [];
+      reportImageMap[img.report_id].push(img);
+    }
+
+    const reportsByPrescription = {};
+    for (const report of reports) {
+      report.images = reportImageMap[report.id] || [];
+      if (!reportsByPrescription[report.prescription_id]) {
+        reportsByPrescription[report.prescription_id] = [];
+      }
+      reportsByPrescription[report.prescription_id].push(report);
+    }
+
+    // Step 6: Combine reports into prescriptions
+    const combined = prescriptions.map(p => ({
+      ...p,
+      images: prescriptionImageMap[p.id] || [],
+      reports: reportsByPrescription[p.id] || []
+    }));
+
+    // Step 7: Standalone shared reports (no prescription_id)
+    const standaloneReports = await connection.query(
+      `SELECT id, title, test_name, delivery_date, created_at
+       FROM reports
+       WHERE prescription_id IS NULL AND user_id = $1 AND shared = true AND deleted = false
+       ORDER BY created_at DESC`,
+      [user_id]
+    );
+
+    const standaloneReportIds = standaloneReports.map(r => r.id);
+
+    const standaloneImages = await connection.query(
+      `SELECT report_id, id as report_img_id, resiged, thumb
+       FROM report_images
+       WHERE report_id = ANY($1::int[]) AND deleted = false
+       ORDER BY created_at ASC`,
+      [standaloneReportIds]
+    );
+
+    const standaloneImageMap = {};
+    for (const img of standaloneImages) {
+      if (!standaloneImageMap[img.report_id]) standaloneImageMap[img.report_id] = [];
+      standaloneImageMap[img.report_id].push(img);
+    }
+
+    for (const report of standaloneReports) {
+      report.images = standaloneImageMap[report.id] || [];
+    }
+
+    // Step 8: Return everything
+    return res.status(200).json({
+      flag: 200,
+      accessToken: fileAccessToken,
+      prescriptions: combined,
+      standaloneReports,
+      message: 'Shared documents fetched successfully.'
+    });
+
+  } catch (error) {
+    console.error('Error in getSharedDocs:', error);
+    return res.status(500).json({ error: 'An unknown error occurred.' });
+  } finally {
+    await connection.release();
+  }
+});
 
 
 
@@ -692,7 +835,10 @@ if (isExist.profile_image_url) {
 });
 
 
-console.log("hi");
+
+
+
+
 
 app.listen(port, () => {
   console.log(`🚀 Server is up and running on http://localhost:${port}`);
