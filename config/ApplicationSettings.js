@@ -1,7 +1,7 @@
 require("dotenv").config();
 
 var ApplicationSettings = {
-  port: process.env.PORT || "5000",
+  port: process.env.PORT || 8080,
   jwtSecret: process.env.JWTSECRET || "fish",
  // Individual PostgreSQL settings
   postgresHost: process.env.POSTGRES_HOST || "localhost",
