@@ -29,6 +29,10 @@ app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads'))
 app.use('/profiles', authfilereq, express.static(path.join(__dirname, 'profiles')));
 
 
+app.get("/", (_, res) => {
+  res.send("🟢 Server is alive");
+});
+
 // Multer setup
 const storage = multer.memoryStorage();
 
