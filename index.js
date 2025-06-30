@@ -844,6 +844,7 @@ if (isExist.profile_image_url) {
 
 
 
-app.listen(port, () => {
-  console.log(`🚀 Server is up and running on http://localhost:${port}`);
+
+app.listen(5000, '0.0.0.0', () => {
+  console.log("Server running on port 5000");
 });
