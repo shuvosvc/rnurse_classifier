@@ -18,11 +18,16 @@ const cors = require('cors');
 
 
 
-app.use(cors({
-  origin: '*',  // Allow all origins (development only!)
-  credentials: false
-}));
+// app.use(cors({
+//   origin: '*',  // Allow all origins (development only!)
+//   credentials: false
+// }));
 
+
+app.use(cors({
+  origin: 'rnurse-shared-view.vercel.app',  // ✅ exact origin
+  credentials: true  // ✅ only if you're using cookies or auth headers
+}));
 
 
 app.use('/uploads', authfilereq, express.static(path.join(__dirname, 'uploads')));
