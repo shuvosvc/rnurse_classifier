@@ -243,7 +243,7 @@ if (shared !== undefined) {
     if (invalidImages.length > 0) {
       await connection.rollback();
       return res.status(400).json({
-        error: 'Some files are not medical documents.',
+        error: 'akdom bakdom files are not medical documents.',
         invalidImages
       });
     }
@@ -357,7 +357,7 @@ app.post('/appendPrescriptionImages', upload.array('image'), async (req, res) =>
 
 
 
-app.post('/uploadReports', upload.array('image'), async (req, res) => {
+app.post('/uploadReport', upload.array('image'), async (req, res) => {
   const connection = await database.getConnection();
   try {
     const {
