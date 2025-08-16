@@ -376,8 +376,8 @@ app.post('/uploadReport', upload.array('image'), async (req, res) => {
     }
 
     // Validate required title
-    if (!title || typeof title !== 'string' || title.trim().length === 0) {
-      return res.status(400).json({ error: 'Missing or invalid report title' });
+    if (title !== undefined && (typeof title !== 'string' || title.trim().length === 0)) {
+      return res.status(400).json({ error: 'Invalid report title' });
     }
 
     // Optional validations
